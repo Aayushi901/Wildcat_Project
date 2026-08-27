@@ -187,3 +187,24 @@ END {
 
 echo "Found BAM paths: $OUT"
 echo "Missing IDs: $MISSING"
+
+#for qualimap of prionailurus genus data 
+
+mkdir -p prionailurus_qualimap_results
+
+max_jobs=12
+threads_per_bam=10
+
+while IFS= read -r bam || [[ -n "$bam" ]]; do
+  [[ -z "$bam" || "$bam" =~ ^[[:space:]]*# ]] && continue
+
+  (
+    sample=$(basename "$bam" .bam)
+    qualimap bamqc -bam "$bam" -nt "$threads_per_bam" \
+      -outdir "prionailurus_qualimap_results/$sample" -outformat HTML
+  ) &
+
+  while (( $(jobs -pr | wc -l) >= max_jobs )); do sleep 2; done
+done < bam_paths_txt
+
+wait
