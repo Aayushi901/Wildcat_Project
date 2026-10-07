@@ -946,6 +946,8 @@ END {
 AWK
 
 #3. Convert both samples in parallel
+set -o pipefail
+
 printf '%s\n' flat_headed rusty_spotted \
   | xargs -P 2 -n 1 bash -c '
 set -euo pipefail
@@ -961,6 +963,9 @@ esac
 INDIR="$SAMPLE/masked_d10_D${MAXDP}"
 OUTDIR="$SAMPLE/psmc_d10_D${MAXDP}"
 OUT="$OUTDIR/input.psmcfa"
+
+test -s qc/pad_psmc_input.awk
+test -s reference/autosomes.bed
 
 echo "START: $SAMPLE"
 
@@ -979,6 +984,20 @@ echo "DONE: $SAMPLE"
 ' _ \
   && echo "PASS: both PSMC input conversions completed"
 
+#
+echo "=== FLAT-HEADED CAT ==="
+
+awk -f qc/check_psmc_input.awk \
+  reference/autosomes.bed \
+  flat_headed/psmc_d10_D36/input.psmcfa
+
+echo "=== RUSTY-SPOTTED CAT ==="
+
+awk -f qc/check_psmc_input.awk \
+  reference/autosomes.bed \
+  rusty_spotted/psmc_d10_D27/input.psmcfa
+
+  
   #4. Validate both PSMC inputs
   #The symbols mean:
 #K: a retained bin containing a heterozygous call.
