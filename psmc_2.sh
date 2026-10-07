@@ -186,15 +186,17 @@ do
     cat "$DIR/convergence_support_round30.txt"
 done
 
+<!--
 #results
 #(=== flat_headed ===
 #Theta: iteration 25 = 0.021289; iteration 30 = 0.020987
 #Rho:   iteration 25 = 0.005240; iteration 30 = 0.005279
 #Largest relative change in theta*lambda, iterations 25-30: 14.49%
 #Atomic interval with largest change: 4
-#Group   Expected_recombinations Assessment
-#1       23633.382       >=10
-#2       1764.454        >=10
+```
+Group   Expected_recombinations Assessment
+1       23633.382       >=10
+2       1764.454        >=10
 3       3839.636        >=10
 4       4974.857        >=10
 5       4678.262        >=10
@@ -257,3 +259,4 @@ Group   Expected_recombinations Assessment
 27      1233.627        >=10
 28      505.554 >=10
 Groups below 10 expected recombinations: 0
+```
