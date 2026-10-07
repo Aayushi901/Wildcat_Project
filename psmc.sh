@@ -980,7 +980,7 @@ echo "DONE: $SAMPLE"
   && echo "PASS: both PSMC input conversions completed"
 
   #4. Validate both PSMC inputs
-  The symbols mean:
+  #The symbols mean:
 #K: a retained bin containing a heterozygous call.
 #T: a retained bin with no heterozygous call.
 ##N: a missing bin.
