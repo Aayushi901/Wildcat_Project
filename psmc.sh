@@ -338,3 +338,726 @@ END {
 ' reference/autosomes.txt "$REF" \
   > qc/reference_mask_check.txt \
   && cat qc/reference_mask_check.txt
+
+#The checks passed. reference contains 31.99% lowercase sequence, and the candidate depth filters retain 54.89% of the flat-headed genome and 67.19% of the rusty-spotted genome.
+#These percentages overlap: we cannot subtract 31.99% from the depth-retained percentages to calculate usable sequence. Some lowercase regions already fail the depth filters.
+#NCBI distributes genomes with lowercase masking from WindowMasker or RepeatMasker. Your result is consistent with that convention, but the lowercase count alone cannot identify the masking method.
+
+#Next, extract the lowercase and ambiguous regions into a candidate exclusion BED.
+#1. Set the paths
+conda activate psmc-linux
+cd /home/aayushi/data1/psmc_linux
+
+set -o pipefail
+
+REF="/home/aayushi/data1/reference/GCF_027475565.1_VMU_Ajub_asm_v1.0_genomic.fasta"
+
+command -v bedtools
+#2. Extract and merge the masked intervals
+LC_ALL=C awk '
+BEGIN { OFS="\t" }
+
+NR==FNR {
+    wanted[$1]=1
+    next
+}
+
+/^>/ {
+    name=$1
+    sub(/^>/,"",name)
+    selected=(name in wanted)
+    position=0
+    if (selected) chromosomes++
+    next
+}
+
+selected {
+    seq=$0
+    gsub(/[[:space:]]/,"",seq)
+
+    line_length=length(seq)
+    total+=line_length
+    offset=0
+
+    while (match(seq,/[^ACGT]+/)) {
+        start=position+offset+RSTART-1
+        end=start+RLENGTH
+        print name,start,end
+
+        consumed=RSTART+RLENGTH-1
+        offset+=consumed
+        seq=substr(seq,consumed+1)
+    }
+
+    position+=line_length
+}
+
+END {
+    if (chromosomes!=18 || total!=2246314264) {
+        print "ERROR: unexpected autosome count or sequence length" > "/dev/stderr"
+        exit 1
+    }
+}
+' reference/autosomes.txt "$REF" \
+  | LC_ALL=C sort --parallel=8 -S 512M -T reference -k1,1 -k2,2n \
+  | bedtools merge -i - \
+  > reference/autosomes.softmask_and_ambiguity.bed.partial \
+  && mv reference/autosomes.softmask_and_ambiguity.bed.partial \
+        reference/autosomes.softmask_and_ambiguity.bed
+
+#This produces zero-based, end-exclusive BED coordinates. Merging joins adjacent intervals, including regions split across FASTA lines.
+#Your previous counts imply:
+#- Lowercase bases: 718,589,567
+#- Ambiguous bases: 2,800
+#- Total excluded bases: 718,592,367
+#This command checks that the BED represents exactly that total:
+awk '
+{
+    if ($2<0 || $3<=$2) bad++
+    masked += $3-$2
+}
+END {
+    printf "Mask intervals: %.0f\n",NR
+    printf "Masked bases: %.0f\n",masked
+    printf "Masked percentage: %.4f%%\n",
+           100*masked/2246314264
+    printf "Bases outside this mask: %.0f\n",
+           2246314264-masked
+
+    if (bad || masked!=718592367) {
+        print "ERROR: mask validation failed"
+        exit 1
+    }
+
+    print "PASS: mask length matches the FASTA counts"
+}
+' reference/autosomes.softmask_and_ambiguity.bed
+
+#(
+set -euo pipefail
+
+REFDIR="/home/aayushi/data1/reference"
+PREFIX="GCF_027475565.1_VMU_Ajub_asm_v1.0"
+
+echo "Checking compressed file integrity..."
+gzip -t "$REFDIR/${PREFIX}_genomic.fna.gz"
+
+echo "Checksum of decompressed .fna.gz:"
+gzip -dc "$REFDIR/${PREFIX}_genomic.fna.gz" | sha256sum
+
+echo "Checksum of .fasta:"
+sha256sum "$REFDIR/${PREFIX}_genomic.fasta"
+)
+#it shows
+#Mask intervals: 12765917
+#Masked bases: 718592367
+#Masked percentage: 31.9898%
+#Bases outside this mask: 1527721897
+#PASS: mask length matches the FASTA counts
+
+#next step- This step creates intermediate BCF files containing both variant and nonvariant calls at covered positions. Depth filtering and the exclusion mask will be applied during consensus preparation. The mask’s extraction is validated; its download/masking provenance still needs confirmation.
+conda activate psmc-linux
+cd /home/aayushi/data1/psmc_linux
+
+(
+set -euo pipefail
+
+REF="/home/aayushi/data1/reference/GCF_027475565.1_VMU_Ajub_asm_v1.0_genomic.fasta"
+
+mkdir -p flat_headed/bcf rusty_spotted/bcf logs/calling
+
+if [ ! -e reference/cheetah.fa ]; then
+    ln -s "$REF" reference/cheetah.fa
+fi
+
+samtools faidx reference/cheetah.fa
+
+test -s flat_headed/autosomes.filtered.bam.csi
+test -s rusty_spotted/autosomes.filtered.bam.csi
+
+awk '{
+    print "flat_headed", $1
+    print "rusty_spotted", $1
+}' reference/autosomes.txt > qc/calling_jobs.txt
+
+echo "Number of chromosome jobs:"
+wc -l < qc/calling_jobs.txt
+)
+
+#
+xargs -P 8 -n 2 bash -c '
+set -euo pipefail
+
+SAMPLE="$1"
+CHR="$2"
+
+OUT="$SAMPLE/bcf/$CHR.bcf"
+TMP="$SAMPLE/bcf/$CHR.partial.bcf"
+LOG="logs/calling/${SAMPLE}.${CHR}"
+
+if [ -s "$OUT" ] && [ -s "$OUT.csi" ] && [ -f "$OUT.done" ]; then
+    echo "SKIP completed: $SAMPLE $CHR"
+    exit 0
+fi
+
+echo "START: $SAMPLE $CHR"
+
+bcftools mpileup \
+    --full-BAQ \
+    -E \
+    -q 30 \
+    -Q 20 \
+    -d 10000 \
+    -f reference/cheetah.fa \
+    -r "$CHR" \
+    -Ou \
+    "$SAMPLE/autosomes.filtered.bam" \
+    2> "${LOG}.mpileup.log" \
+  | bcftools call \
+      -c \
+      --ploidy 2 \
+      -Ob \
+      -o "$TMP" \
+      2> "${LOG}.call.log"
+
+bcftools index -f "$TMP" 2> "${LOG}.index.log"
+
+mv "$TMP" "$OUT"
+mv "$TMP.csi" "$OUT.csi"
+touch "$OUT.done"
+
+echo "DONE: $SAMPLE $CHR"
+' _ < qc/calling_jobs.txt \
+  && echo "PASS: all 36 chromosome-calling jobs completed"
+
+#
+echo "Flat-headed completed chromosomes:"
+find flat_headed/bcf -maxdepth 1 -name '*.bcf.done' | wc -l
+
+echo "Rusty-spotted completed chromosomes:"
+find rusty_spotted/bcf -maxdepth 1 -name '*.bcf.done' | wc -l
+
+#Then check the sample identities:
+bcftools query -l flat_headed/bcf/NC_069380.1.bcf
+
+bcftools query -l rusty_spotted/bcf/NC_069380.1.bcf
+
+#Next, convert the BCF files into intermediate diploid FASTQ files, eight chromosomes at a time. We will use the candidate depth ranges:
+#1. Prepare the output folders
+conda activate psmc-linux
+cd /home/aayushi/data1/psmc_linux
+
+mkdir -p \
+  flat_headed/consensus_d10_D36 \
+  rusty_spotted/consensus_d10_D27 \
+  logs/consensus
+
+#2. Run the conversion
+xargs -P 8 -n 2 bash -c '
+set -euo pipefail
+
+SAMPLE="$1"
+CHR="$2"
+
+case "$SAMPLE" in
+    flat_headed)
+        MAXDP=36
+        EXPECTED="SRR6071639"
+        ;;
+    rusty_spotted)
+        MAXDP=27
+        EXPECTED="SRR6071640"
+        ;;
+    *)
+        echo "ERROR: unexpected sample $SAMPLE" >&2
+        exit 1
+        ;;
+esac
+
+INPUT="$SAMPLE/bcf/$CHR.bcf"
+DIR="$SAMPLE/consensus_d10_D${MAXDP}"
+OUT="$DIR/$CHR.raw.fq.gz"
+LOG="logs/consensus/${SAMPLE}.${CHR}.d10_D${MAXDP}"
+
+if [ -s "$OUT" ] && [ -f "$OUT.done" ]; then
+    echo "SKIP completed: $SAMPLE $CHR"
+    exit 0
+fi
+
+test -s "$INPUT"
+test -f "$INPUT.done"
+
+ACTUAL=$(bcftools query -l "$INPUT" 2> "${LOG}.sample.log")
+
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "ERROR: unexpected sample identity in $INPUT" >&2
+    exit 1
+fi
+
+bcftools view -h "$INPUT" \
+    > "${LOG}.header.txt" \
+    2> "${LOG}.header.log"
+
+awk "
+    /^##INFO=<ID=FQ,/ { fq=1 }
+    /^##INFO=<ID=DP,/ { dp=1 }
+    /^##INFO=<ID=MQ,/ { mq=1 }
+    END { exit !(fq && dp && mq) }
+" "${LOG}.header.txt" || {
+    echo "ERROR: required FQ, DP or MQ annotation missing: $INPUT" >&2
+    exit 1
+}
+
+echo "START: $SAMPLE $CHR"
+
+bcftools view -Ov "$INPUT" \
+    2> "${LOG}.view.log" \
+  | vcfutils.pl vcf2fq \
+      -d 10 \
+      -D "$MAXDP" \
+      -Q 30 \
+      -l 10 \
+      2> "${LOG}.vcf2fq.log" \
+  | gzip -c > "$OUT.partial"
+
+gzip -t "$OUT.partial"
+
+mv "$OUT.partial" "$OUT"
+touch "$OUT.done"
+
+echo "DONE: $SAMPLE $CHR"
+' _ < qc/calling_jobs.txt \
+  && echo "PASS: all 36 intermediate FASTQ conversions completed"
+
+#Here, vcf2fq -Q 30 filters the site-level mapping-quality annotation, and -l 10 marks the neighbourhood of indels. The converter represents filtered positions using lowercase sequence or missing bases; we will handle those explicitly in the next step.
+echo "Flat-headed FASTQ files completed:"
+find flat_headed/consensus_d10_D36 \
+  -maxdepth 1 -name '*.raw.fq.gz.done' | wc -l
+
+echo "Rusty-spotted FASTQ files completed:"
+find rusty_spotted/consensus_d10_D27 \
+  -maxdepth 1 -name '*.raw.fq.gz.done' | wc -l
+
+  ##Both samples are ready for masking. We will now create chromosome FASTAs that:
+#Retain consensus bases with quality ≥20.
+#Replace lowercase calls and reference-mask regions with N.
+#Preserve heterozygous bases as IUPAC codes.
+#Fill any missing chromosome ends with N, preserving reference coordinates.
+conda activate psmc-linux
+cd /home/aayushi/data1/psmc_linux
+
+conda install -y --freeze-installed \
+  --override-channels -c conda-forge -c bioconda seqtk
+
+conda list --explicit > software_versions.txt
+
+#2. Prepare chromosome masks and job instructions
+mkdir -p \
+  reference/masks_by_chr \
+  flat_headed/masked_d10_D36 \
+  rusty_spotted/masked_d10_D27 \
+  logs/masking
+
+  #Split the existing mask into chromosome files:
+  awk '
+{
+    file="reference/masks_by_chr/" $1 ".bed"
+    if (file != previous) {
+        if (previous != "") close(previous)
+        printf "%s","" > file
+        previous=file
+    }
+    print $0 > file
+}
+' reference/autosomes.softmask_and_ambiguity.bed
+
+awk '
+BEGIN { OFS="\t" }
+NR==FNR { sizes[$1]=$3; next }
+{
+    if (!($2 in sizes)) {
+        print "ERROR: missing chromosome length" > "/dev/stderr"
+        exit 1
+    }
+    print $1,$2,sizes[$2]
+}
+' reference/autosomes.bed qc/calling_jobs.txt \
+  > qc/masking_jobs.txt
+
+  #3. Create the length-checking and reporting instructions
+  #This is a small AWK helper used by the Linux commands, not Python. Copy the entire block, including the final AWK line:
+  cat > qc/check_masked_fasta.awk <<'AWK'
+BEGIN {
+    OFS="\t"
+    nblock=sprintf("%80s","")
+    gsub(/ /,"N",nblock)
+}
+
+/^>/ {
+    headers++
+    name=$1
+    sub(/^>/,"",name)
+
+    if (headers!=1 || name!=chr) {
+        print "ERROR: unexpected FASTA header" > "/dev/stderr"
+        failed=1
+        exit 1
+    }
+
+    print ">" chr
+    next
+}
+
+{
+    if (headers!=1) {
+        print "ERROR: sequence without header" > "/dev/stderr"
+        failed=1
+        exit 1
+    }
+
+    seq=$0
+    gsub(/[[:space:]]/,"",seq)
+
+    # Keep only uppercase homozygous or biallelic heterozygous calls.
+    # Lowercase calls, Ns, and other ambiguity codes become N.
+    gsub(/[^ACGTMRWSYK]/,"N",seq)
+
+    observed+=length(seq)
+    if (observed>expected) {
+        print "ERROR: sequence exceeds reference length" > "/dev/stderr"
+        failed=1
+        exit 1
+    }
+
+    copy=seq
+    callable+=gsub(/[ACGTMRWSYK]/,"",copy)
+
+    copy=seq
+    heterozygous+=gsub(/[MRWSYK]/,"",copy)
+
+    print seq
+}
+
+END {
+    if (failed) exit 1
+
+    if (headers!=1 || observed==0) {
+        print "ERROR: empty or invalid FASTA" > "/dev/stderr"
+        exit 1
+    }
+
+    # Complete any uncovered chromosome tail with missing bases.
+    remaining=expected-observed
+    while (remaining>0) {
+        chunk=(remaining>80 ? 80 : remaining)
+        print substr(nblock,1,chunk)
+        remaining-=chunk
+    }
+
+    printf "%s\t%.0f\t%.0f\t%.0f\t%.0f\t%.0f\n",
+           chr,expected,callable,heterozygous,
+           expected-callable,expected-observed > report
+}
+AWK
+
+#4. Apply the masking in parallel
+xargs -P 8 -n 3 bash -c '
+set -euo pipefail
+
+SAMPLE="$1"
+CHR="$2"
+LENGTH="$3"
+
+case "$SAMPLE" in
+    flat_headed) MAXDP=36 ;;
+    rusty_spotted) MAXDP=27 ;;
+    *) echo "ERROR: unexpected sample" >&2; exit 1 ;;
+esac
+
+INPUT="$SAMPLE/consensus_d10_D${MAXDP}/$CHR.raw.fq.gz"
+MASK="reference/masks_by_chr/$CHR.bed"
+DIR="$SAMPLE/masked_d10_D${MAXDP}"
+OUT="$DIR/$CHR.masked.fa.gz"
+REPORT="$DIR/$CHR.qc.tsv"
+LOG="logs/masking/${SAMPLE}.${CHR}"
+
+if [ -s "$OUT" ] && [ -s "$REPORT" ] && [ -f "$OUT.done" ]; then
+    echo "SKIP completed: $SAMPLE $CHR"
+    exit 0
+fi
+
+test -s "$INPUT"
+test -f "$INPUT.done"
+test -s "$MASK"
+
+echo "START: $SAMPLE $CHR"
+
+seqtk seq \
+    -q 20 \
+    -Q 33 \
+    -n N \
+    -M "$MASK" \
+    -A \
+    -l 80 \
+    "$INPUT" \
+    2> "${LOG}.seqtk.log" \
+  | LC_ALL=C awk \
+      -v chr="$CHR" \
+      -v expected="$LENGTH" \
+      -v report="$REPORT.partial" \
+      -f qc/check_masked_fasta.awk \
+      2> "${LOG}.validation.log" \
+  | gzip -c > "$OUT.partial"
+
+gzip -t "$OUT.partial"
+test -s "$REPORT.partial"
+
+mv "$OUT.partial" "$OUT"
+mv "$REPORT.partial" "$REPORT"
+touch "$OUT.done"
+
+echo "DONE: $SAMPLE $CHR"
+' _ < qc/masking_jobs.txt \
+  && echo "PASS: all 36 masked chromosome FASTAs completed"
+
+#5. Display the usable-sequence summaries
+for SAMPLE in flat_headed rusty_spotted
+do
+    case "$SAMPLE" in
+        flat_headed) DIR="$SAMPLE/masked_d10_D36" ;;
+        rusty_spotted) DIR="$SAMPLE/masked_d10_D27" ;;
+    esac
+
+    echo "=== $SAMPLE ==="
+
+    echo "Completed chromosomes:"
+    find "$DIR" -maxdepth 1 -name '*.masked.fa.gz.done' | wc -l
+
+    awk '
+    {
+        chromosomes++
+        total+=$2
+        callable+=$3
+        het+=$4
+        missing+=$5
+        tail+=$6
+    }
+    END {
+        if (chromosomes!=18 || total!=2246314264) {
+            print "ERROR: incomplete chromosome reports"
+            exit 1
+        }
+
+        printf "Reference bases: %.0f\n",total
+        printf "Retained callable bases: %.0f (%.2f%% of autosomes)\n",
+               callable,100*callable/total
+        printf "Missing or masked bases: %.0f (%.2f%%)\n",
+               missing,100*missing/total
+        printf "Callable fraction outside reference mask: %.2f%%\n",
+               100*callable/1527721897
+        printf "Retained heterozygous bases: %.0f\n",het
+        if (callable>0)
+            printf "Heterozygous fraction of callable bases: %.6f\n",
+                   het/callable
+        printf "Missing chromosome-tail bases added: %.0f\n",tail
+    }
+    ' "$DIR"/*.qc.tsv
+done
+
+#Both masked genomes are complete. We retained approximately 851 million callable bases for the flat-headed cat and 1.091 billion for the rusty-spotted cat.
+#The missing fraction outside the reference mask is still 44.31% and 28.61%, respectively. We can proceed with exploratory PSMC runs, but the unequal coverage and filtering mean these heterozygosity estimates should not yet be interpreted as a biological difference between species.
+#Next, create and validate one PSMC input per cat. Both conversions will run simultaneously.
+#PSMC uses 100-base bins. Its converter can omit chromosomes with fewer than 20% usable bases; we will explicitly check that all 18 survive. We will also pad the final incomplete bin with N so it is treated consistently.
+#1. Prepare the folders
+conda activate psmc-linux
+cd /home/aayushi/data1/psmc_linux
+
+mkdir -p \
+  flat_headed/psmc_d10_D36 \
+  rusty_spotted/psmc_d10_D27 \
+  logs/psmc_input
+
+#2. Create the chromosome-length check and padding instructions
+cat > qc/pad_psmc_input.awk <<'AWK'
+function finish_chromosome(    padding) {
+    if (chr=="") return
+
+    if (observed!=sizes[chr]) {
+        print "ERROR: incorrect sequence length for " chr > "/dev/stderr"
+        failed=1
+        exit 1
+    }
+
+    padding=(100-observed%100)%100
+    if (padding>0) print substr(nblock,1,padding)
+}
+
+BEGIN {
+    nblock=sprintf("%100s","")
+    gsub(/ /,"N",nblock)
+}
+
+NR==FNR {
+    sizes[$1]=$3
+    next
+}
+
+/^>/ {
+    finish_chromosome()
+
+    chr=$1
+    sub(/^>/,"",chr)
+
+    if (!(chr in sizes) || seen[chr]++) {
+        print "ERROR: unexpected or repeated chromosome " chr > "/dev/stderr"
+        failed=1
+        exit 1
+    }
+
+    chromosomes++
+    observed=0
+    print ">" chr
+    next
+}
+
+{
+    seq=$0
+    gsub(/[[:space:]]/,"",seq)
+
+    if (chr=="" || seq ~ /[^ACGTMRWSYKN]/) {
+        print "ERROR: invalid masked FASTA" > "/dev/stderr"
+        failed=1
+        exit 1
+    }
+
+    observed+=length(seq)
+    print seq
+}
+
+END {
+    if (failed) exit 1
+    finish_chromosome()
+
+    if (chromosomes!=18) {
+        print "ERROR: expected 18 chromosomes" > "/dev/stderr"
+        exit 1
+    }
+}
+AWK
+
+#3. Convert both samples in parallel
+printf '%s\n' flat_headed rusty_spotted \
+  | xargs -P 2 -n 1 bash -c '
+set -euo pipefail
+
+SAMPLE="$1"
+
+case "$SAMPLE" in
+    flat_headed) MAXDP=36 ;;
+    rusty_spotted) MAXDP=27 ;;
+    *) exit 1 ;;
+esac
+
+INDIR="$SAMPLE/masked_d10_D${MAXDP}"
+OUTDIR="$SAMPLE/psmc_d10_D${MAXDP}"
+OUT="$OUTDIR/input.psmcfa"
+
+echo "START: $SAMPLE"
+
+gzip -dc "$INDIR"/*.masked.fa.gz \
+  | LC_ALL=C awk \
+      -f qc/pad_psmc_input.awk \
+      reference/autosomes.bed - \
+  | fq2psmcfa -s 100 - \
+      > "$OUT.partial" \
+      2> "logs/psmc_input/${SAMPLE}.log"
+
+test -s "$OUT.partial"
+mv "$OUT.partial" "$OUT"
+
+echo "DONE: $SAMPLE"
+' _ \
+  && echo "PASS: both PSMC input conversions completed"
+
+  #4. Validate both PSMC inputs
+  The symbols mean:
+#K: a retained bin containing a heterozygous call.
+#T: a retained bin with no heterozygous call.
+##N: a missing bin.
+#Bin-level missingness differs from base-level missingness: the standard converter labels a bin missing when more than 90% of its bases are missing. Consequently, retained bins can still contain masked bases.
+cat > qc/check_psmc_input.awk <<'AWK'
+function check_length() {
+    if (chr!="" && bins!=int((sizes[chr]+99)/100)) {
+        print "ERROR: incorrect bin count for " chr > "/dev/stderr"
+        bad=1
+    }
+}
+
+NR==FNR {
+    sizes[$1]=$3
+    next
+}
+
+/^>/ {
+    check_length()
+
+    chr=$1
+    sub(/^>/,"",chr)
+    bins=0
+
+    if (!(chr in sizes) || seen[chr]++) bad=1
+    chromosomes++
+    next
+}
+
+{
+    seq=$0
+    gsub(/[[:space:]]/,"",seq)
+
+    if (chr=="" || seq ~ /[^KNT]/) bad=1
+
+    bins+=length(seq)
+    total+=length(seq)
+
+    copy=seq
+    het+=gsub(/K/,"",copy)
+    copy=seq
+    hom+=gsub(/T/,"",copy)
+    copy=seq
+    missing+=gsub(/N/,"",copy)
+}
+
+END {
+    check_length()
+
+    print "Chromosomes:",chromosomes
+    printf "Total bins: %.0f\n",total
+    printf "Heterozygous bins (K): %.0f\n",het
+    printf "Nonheterozygous bins (T): %.0f\n",hom
+    printf "Missing bins (N): %.0f\n",missing
+
+    if (total>0)
+        printf "Missing-bin percentage: %.2f%%\n",100*missing/total
+
+    if (bad || chromosomes!=18 || het==0 || hom==0) {
+        print "ERROR: PSMC input needs review"
+        exit 1
+    }
+
+    print "PASS: chromosome identities, bin lengths and symbols validated"
+}
+AWK
+
+#
+echo "=== FLAT-HEADED CAT ==="
+
+awk -f qc/check_psmc_input.awk \
+  reference/autosomes.bed \
+  flat_headed/psmc_d10_D36/input.psmcfa
+
+#
+echo "=== RUSTY-SPOTTED CAT ==="
+
+awk -f qc/check_psmc_input.awk \
+  reference/autosomes.bed \
+  rusty_spotted/psmc_d10_D27/input.psmcfa
