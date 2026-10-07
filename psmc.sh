@@ -248,3 +248,93 @@ samtools index -@ 4 -c flat_headed/autosomes.filtered.bam \
 #
 samtools index -@ 4 -c rusty_spotted/autosomes.filtered.bam \
   && echo "PASS: rusty-spotted BAM indexed"
+
+#1. Check how much sequence would remain under candidate depth filters
+conda activate psmc-linux
+cd /home/aayushi/data1/psmc_linux
+
+awk -v low=10 -v high=36 '
+{
+    total += $2
+    if ($1 < low) below += $2
+    else if ($1 > high) above += $2
+    else retained += $2
+}
+END {
+    if (total==0) {
+        print "ERROR: empty depth histogram"
+        exit 1
+    }
+    print "FLAT-HEADED CAT"
+    printf "Candidate depth range: %d-%d\n",low,high
+    printf "Below range: %.2f%%\n",100*below/total
+    printf "Above range: %.2f%%\n",100*above/total
+    printf "Within range: %.2f%%\n",100*retained/total
+}
+' qc/flat_headed.depth_histogram.tsv
+
+#
+awk -v low=10 -v high=27 '
+{
+    total += $2
+    if ($1 < low) below += $2
+    else if ($1 > high) above += $2
+    else retained += $2
+}
+END {
+    if (total==0) {
+        print "ERROR: empty depth histogram"
+        exit 1
+    }
+    print "RUSTY-SPOTTED CAT"
+    printf "Candidate depth range: %d-%d\n",low,high
+    printf "Below range: %.2f%%\n",100*below/total
+    printf "Above range: %.2f%%\n",100*above/total
+    printf "Within range: %.2f%%\n",100*retained/total
+}
+' qc/rusty_spotted.depth_histogram.tsv
+
+#2. Check whether your reference contains lowercase masking
+REF="/home/aayushi/data1/reference/GCF_027475565.1_VMU_Ajub_asm_v1.0_genomic.fasta"
+
+LC_ALL=C awk '
+NR==FNR {
+    wanted[$1]=1
+    next
+}
+/^>/ {
+    name=$1
+    sub(/^>/,"",name)
+    selected=(name in wanted)
+    if (selected) chromosomes++
+    next
+}
+selected {
+    seq=$0
+    gsub(/[[:space:]]/,"",seq)
+    total += length(seq)
+
+    copy=seq
+    lowercase += gsub(/[acgt]/,"",copy)
+
+    copy=seq
+    ambiguous += gsub(/[^ACGTacgt]/,"",copy)
+}
+END {
+    if (chromosomes!=18 || total!=2246314264) {
+        print "ERROR: unexpected autosome count or sequence length" > "/dev/stderr"
+        print "Chromosomes:",chromosomes > "/dev/stderr"
+        printf "Bases: %.0f\n",total > "/dev/stderr"
+        exit 1
+    }
+
+    print "Autosomes:",chromosomes
+    printf "Total bases: %.0f\n",total
+    printf "Lowercase A/C/G/T: %.0f (%.2f%%)\n",
+           lowercase,100*lowercase/total
+    printf "Ambiguous bases, including N: %.0f (%.2f%%)\n",
+           ambiguous,100*ambiguous/total
+}
+' reference/autosomes.txt "$REF" \
+  > qc/reference_mask_check.txt \
+  && cat qc/reference_mask_check.txt
