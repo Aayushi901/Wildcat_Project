@@ -1,4 +1,18 @@
-## this the script for excel sheet in just one go and main filters are illumina and bgiseq and WGS platform 
+## Command for installing dependencies 
+conda create -n ncbi-tools -c conda-forge -c bioconda entrez-direct
+#
+conda activate ncbi-tools
+#
+conda install -n ncbi-tools -c conda-forge perl
+#
+conda install -c conda-forge pandas openpyxl
+#
+conda activate ncbi-tools
+#
+which perl
+perl -MTime::HiRes -e 'print "Perl is ready\n"'
+
+## This is the script for the Excel sheet in just one go, and the main filters are Illumina, BGISEQ, and the WGS platform 
 
 python3 - <<'PY'
 import subprocess
