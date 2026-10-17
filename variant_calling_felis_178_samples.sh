@@ -125,3 +125,6 @@ ps -p 1907213 -o pid,etime,cmd
 
 #To inspect the current sample’s progress
 tail -n 30 /home/aayushi/strelka_felis/results/SRR26919620.GCF_027475565.1_VMU_Ajub_asm_v1.0/execution.log
+
+#Check how many samples have finished:
+grep -c '^Finished:' /home/aayushi/strelka_felis/strelka_batch.log
