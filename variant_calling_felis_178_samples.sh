@@ -107,3 +107,21 @@ nohup bash /home/aayushi/strelka_felis/run_strelka.sh \
 
 #monitor the progress 
 tail -f /home/aayushi/strelka_felis/strelka_batch.log
+
+#then I faced an error while running a script 
+cat /home/aayushi/strelka_felis/strelka_batch.log
+#Invalid or missing absolute BAM path: /home/aayushi/merged/lybica/SAMEA112127404.GCF_027475565.1_VMU_Ajub_asm_v1.0.bam
+#If the file is listed, back up your path list and remove trailing whitespace
+cp /home/aayushi/strelka_felis/bam_paths.txt \
+   /home/aayushi/strelka_felis/bam_paths.txt.bak
+
+sed -i 's/[[:space:]]*$//' /home/aayushi/strelka_felis/bam_paths.txt
+#Then restart:
+nohup bash /home/aayushi/strelka_felis/run_strelka.sh \
+    > /home/aayushi/strelka_felis/strelka_batch.log 2>&1 &
+
+#To see how long your batch has been running
+ps -p 1907213 -o pid,etime,cmd
+
+#To inspect the current sample’s progress
+tail -n 30 /home/aayushi/strelka_felis/results/SRR26919620.GCF_027475565.1_VMU_Ajub_asm_v1.0/execution.log
