@@ -41,6 +41,13 @@ SRR5373738
 SRR5373739
 EOF
 
+#Command for running FastQC 
+cd /home/aayushi/felis_catus/fastq_files/devon &&
+mkdir -p fastqc &&
+find . -maxdepth 1 -type f \( -iname "*.fastq" -o -iname "*.fastq.gz" -o -iname "*.fq" -o -iname "*.fq.gz" \) -print0 |
+  xargs -0 -r fastqc --threads 16 --outdir fastqc
+
+
 #find the bam files throughout the server and list the missing bam files as well
 OUT="$PWD/bam_paths.txt"
 MISSING="$PWD/missing_srr_drr_ids.txt"
