@@ -3,6 +3,15 @@ conda create -n fastqc_env -c conda-forge -c bioconda fastqc multiqc
 #command for doing fastqc 
 find /home/aayushi/felis_catus/fastq_files -name "*.fastq.gz" | \
 xargs -P 4 -n 1 fastqc -t 4 -o /home/aayushi/felis_catus/fastqc_results
+
+#command for prefetching the srafiles
+xargs -P 12 -n 1 prefetch \
+  --max-size unlimited \
+  --output-directory /home/aayushi/felis_catus/sra_files/bengal/sra \
+  --resume yes \
+  < sra_ids.txt
+
+  
 #frm sra to fastgz
 mkdir -p /home/aayushi/felis_catus/fastq_files/nap_sib_sia_toy
 mkdir -p /home/aayushi/felis_catus/tmp
