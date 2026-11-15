@@ -42,10 +42,12 @@ SRR5373739
 EOF
 
 #Command for running FastQC 
-cd /home/aayushi/felis_catus/fastq_files/devon &&
+cd /home/aayushi/felis_catus/fastq_files/persian &&
 mkdir -p fastqc &&
-find . -maxdepth 1 -type f \( -iname "*.fastq" -o -iname "*.fastq.gz" -o -iname "*.fq" -o -iname "*.fq.gz" \) -print0 |
-  xargs -0 -r fastqc --threads 16 --outdir fastqc
+find . -maxdepth 1 -type f \
+  \( -iname "*.fastq" -o -iname "*.fastq.gz" -o -iname "*.fq" -o -iname "*.fq.gz" \) \
+  -print0 |
+xargs -0 -r fastqc --threads 16 --outdir fastqc
 
 
 #find the bam files throughout the server and list the missing bam files as well
